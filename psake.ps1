@@ -1,30 +1,97 @@
 # Helper script for those who want to run psake without importing the module.
-# Example:
-# .\psake.ps1 "default.ps1" "BuildHelloWord" "4.0" 
+# Examples:
+# .\psake.ps1 "default.ps1" "BuildHelloWord" -framework "4.0" 
+# .\psake.ps1 default.ps1 Build
+# .\psake.ps1 Build
+# .\psake.ps1 alternate.ps1 Build,Test
 
-# Must match parameter definitions for psake.psm1/invoke-psake 
-# otherwise named parameter binding fails
+# Parameter definitions vary from psake.psm1/invoke-psake to support 
+# optionally specifying the buildFile.
+[CmdletBinding(DefaultParametersetName="BuildFileAndTaskList")]
 param(
-  [Parameter(Position=0,Mandatory=0)]
-  [string]$buildFile = 'default.ps1',
-  [Parameter(Position=1,Mandatory=0)]
+  [Parameter(ParameterSetName="TaskListOnly",Position=0,Mandatory=0)]
+  [string[]]$taskList2 = @(),  
+
+  [Parameter(ParameterSetName="BuildFileAndTaskList",Position=0,Mandatory=0)]
+  [string]$buildFile,
+  [Parameter(ParameterSetName="BuildFileAndTaskList",Position=1,Mandatory=0)]
   [string[]]$taskList = @(),
-  [Parameter(Position=2,Mandatory=0)]
+  
+  #Named Only Parameters
+  [Parameter(Mandatory=0)]
   [string]$framework = '3.5',
-  [Parameter(Position=3,Mandatory=0)]
+  [Parameter(Mandatory=0)]
   [switch]$docs = $false,
-  [Parameter(Position=4,Mandatory=0)]
+  [Parameter(Mandatory=0)]
   [System.Collections.Hashtable]$parameters = @{},
-  [Parameter(Position=5, Mandatory=0)]
+  [Parameter(Mandatory=0)]
   [System.Collections.Hashtable]$properties = @{}
 )
+ 
+ switch($PsCmdlet.ParameterSetName)
+ {
+ "BuildFileAndTaskList"  { 
+    if($buildFile -notmatch ".*\.ps1" -and $taskList.Count -eq 0)
+    {
+      $taskList = @($buildFile)
+      $buildFile = $null
+    }
+  }
+   
+ "TaskListOnly" {
+    $buildFile = $null
+    $taskList = $taskList2
+  }
+}
+#write-host ("{0} {1}" -f $buildFile, ($taskList -join ","))
+#return
+
+$erroractionpreference = "SilentlyContinue"
+
+$buildFilePath = split-path -parent $(resolve-path $buildFile)
+$currentScriptPath = Split-Path -parent $MyInvocation.MyCommand.path
+$currentPath = ".\"
+$scriptsFolder = ".\scripts"
+$searchPaths = @($buildFilePath, $currentScriptPath, $currentPath, $scriptsFolder); 
 
 remove-module psake -ea 'SilentlyContinue'
-$scriptPath = Split-Path -parent $MyInvocation.MyCommand.path
-import-module (join-path $scriptPath psake.psm1)
-if (-not(test-path $buildFile))
+foreach($path in $searchPaths){ #looking for the path to the psake module to use.
+  if(test-path (join-path $path psake.psm1 -ea 'SilentlyContinue') -ea 'SilentlyContinue'){
+    $modulePath = $path
+    
+    break
+  }
+}
+
+$erroractionpreference = "Continue"
+
+if(-not $modulePath -or -not(test-path $modulePath)){ throw "psake module not found in the configured search paths [$($searchPaths -join '][')]." }
+import-module (join-path $modulePath psake.psm1)
+
+
+try
 {
-    $buildFile = (join-path $scriptPath $buildFile)
-} 
-invoke-psake $buildFile $taskList $framework $docs $parameters $properties
+  pushd $modulePath #needed to run psake from an arbitrary path and use the defaultBuildFileName from config
+
+  try
+  {
+    if($buildFile)
+    {
+      invoke-psake $buildFile $taskList $framework $docs $parameters $properties
+    }
+    else
+    {
+      invoke-psake -taskList $taskList -framework $framework -docs:$docs -parameters $parameters -properties $properties
+    }
+  }
+  finally
+  {
+    popd
+  }
+}
+finally
+{
+  remove-module psake -ea 'SilentlyContinue'
+}
+
 exit $lastexitcode
